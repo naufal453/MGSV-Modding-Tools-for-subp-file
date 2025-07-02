@@ -3,11 +3,24 @@ from tkinter import filedialog, messagebox, scrolledtext
 import xml.etree.ElementTree as ET
 import os
 import re
+import subprocess
+import tempfile
+import shutil
+import sys
+
+# Try to import tkinterdnd2 for drag and drop functionality
+try:
+    import tkinterdnd2 as tkdnd
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
 
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
 xml_file_path = ""
+subp_file_path = ""
+temp_xml_path = ""
 dark_mode = True
 
 # ============================================================================
@@ -80,6 +93,138 @@ def apply_theme():
     # Buttons
     browse_btn.configure(bg=theme["button_bg"], fg=theme["button_fg"])
     dark_mode_btn.configure(text="Light Mode" if dark_mode else "Dark Mode")
+
+# ============================================================================
+# SUBP PROCESSING FUNCTIONS
+# ============================================================================
+def get_subp_tool_path():
+    """Get the path to SubpTool.exe"""
+    # Get the directory where the current script/executable is located
+    if getattr(sys, 'frozen', False):
+        # If running as compiled executable
+        script_dir = os.path.dirname(sys.executable)
+    else:
+        # If running as script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    subp_tool = os.path.join(script_dir, "FoxEngine", "SubpTool.exe")
+    
+    if not os.path.exists(subp_tool):
+        raise FileNotFoundError(f"SubpTool.exe tidak ditemukan di: {subp_tool}")
+    
+    return subp_tool
+
+def create_temp_directory():
+    """Create temporary directory for SUBP processing"""
+    # Get the directory where the current script/executable is located
+    if getattr(sys, 'frozen', False):
+        # If running as compiled executable
+        script_dir = os.path.dirname(sys.executable)
+    else:
+        # If running as script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    temp_dir = os.path.join(script_dir, "temp")
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+    return temp_dir
+
+def extract_subp_to_xml(subp_path):
+    """Extract SUBP file to XML using SubpTool.exe"""
+    try:
+        subp_tool = get_subp_tool_path()
+        temp_dir = create_temp_directory()
+        
+        # Copy SUBP file to temp directory first
+        subp_filename = os.path.basename(subp_path)
+        temp_subp = os.path.join(temp_dir, subp_filename)
+        shutil.copy2(subp_path, temp_subp)
+        
+        # Run SubpTool.exe with only the SUBP file path
+        cmd = [subp_tool, temp_subp]
+        print(f"Running command: {' '.join(cmd)}")  # Debug output
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, 
+                              cwd=os.path.dirname(subp_tool))
+        
+        print(f"Command output: {result.stdout}")  # Debug output
+        print(f"Command errors: {result.stderr}")  # Debug output
+        
+        if result.returncode != 0:
+            raise Exception(f"SubpTool error (code {result.returncode}): {result.stderr}")
+        
+        # Check for generated XML file in temp directory
+        subp_name_without_ext = os.path.splitext(subp_filename)[0]
+        temp_xml = os.path.join(temp_dir, f"{subp_name_without_ext}.xml")
+        
+        if not os.path.exists(temp_xml):
+            raise Exception("XML file tidak berhasil dibuat dari SUBP")
+        
+        return temp_xml
+        
+    except Exception as e:
+        raise Exception(f"Error saat ekstrak SUBP: {str(e)}")
+
+def convert_xml_to_subp(xml_path, output_subp_path):
+    """Convert XML back to SUBP using SubpTool.exe"""
+    try:
+        subp_tool = get_subp_tool_path()
+        
+        # Run SubpTool.exe with only the XML file path
+        cmd = [subp_tool, xml_path]
+        print(f"Converting XML to SUBP: {' '.join(cmd)}")  # Debug output
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, 
+                              cwd=os.path.dirname(subp_tool))
+        
+        print(f"Conversion output: {result.stdout}")  # Debug output
+        print(f"Conversion errors: {result.stderr}")  # Debug output
+        
+        if result.returncode != 0:
+            raise Exception(f"SubpTool error (code {result.returncode}): {result.stderr}")
+        
+        # Check for generated SUBP file in the same directory as XML
+        xml_dir = os.path.dirname(xml_path)
+        xml_name_without_ext = os.path.splitext(os.path.basename(xml_path))[0]
+        generated_subp = os.path.join(xml_dir, f"{xml_name_without_ext}.subp")
+        
+        if not os.path.exists(generated_subp):
+            raise Exception("SUBP file tidak berhasil dibuat dari XML")
+        
+        # Copy the generated SUBP to the final output location
+        shutil.copy2(generated_subp, output_subp_path)
+        
+        return output_subp_path
+        
+    except Exception as e:
+        raise Exception(f"Error saat konversi XML ke SUBP: {str(e)}")
+
+def process_subp_file(subp_path):
+    """Process SUBP file: extract to XML and load for editing"""
+    global xml_file_path, subp_file_path, temp_xml_path
+    
+    try:
+        # Extract SUBP to XML
+        temp_xml_path = extract_subp_to_xml(subp_path)
+        
+        # Set paths
+        subp_file_path = subp_path
+        xml_file_path = temp_xml_path
+        
+        # Update UI
+        label_xml.config(text=f"{os.path.basename(subp_path)} (SUBP → XML)")
+        
+        # Show success message
+        messagebox.showinfo("Berhasil", 
+                           f"File SUBP berhasil diekstrak ke XML temporary:\n"
+                           f"SUBP: {os.path.basename(subp_path)}\n"
+                           f"XML: {os.path.basename(temp_xml_path)}")
+        
+        return True
+        
+    except Exception as e:
+        messagebox.showerror("Error", f"Gagal memproses file SUBP:\n{str(e)}")
+        return False
 
 # ============================================================================
 # XML PROCESSING FUNCTIONS
@@ -164,16 +309,32 @@ def extract_text_lines_from_xml():
 # UI EVENT HANDLERS
 # ============================================================================
 def browse_xml():
-    """Browse and select XML file"""
-    global xml_file_path
-    xml_file_path = filedialog.askopenfilename(filetypes=[("XML Files", "*.xml")])
-    if xml_file_path:
-        label_xml.config(text=os.path.basename(xml_file_path))
+    """Browse and select XML or SUBP file"""
+    global xml_file_path, subp_file_path, temp_xml_path
+    
+    file_path = filedialog.askopenfilename(
+        filetypes=[("XML Files", "*.xml"), ("SUBP Files", "*.subp"), ("All Files", "*.*")]
+    )
+    
+    if file_path:
+        if file_path.lower().endswith(".subp"):
+            # Process SUBP file
+            if process_subp_file(file_path):
+                # SUBP processed successfully, paths are set in process_subp_file
+                pass
+        elif file_path.lower().endswith(".xml"):
+            # Regular XML file
+            xml_file_path = file_path
+            subp_file_path = ""
+            temp_xml_path = ""
+            label_xml.config(text=os.path.basename(file_path))
+        else:
+            messagebox.showwarning("File Tidak Valid", "Hanya file XML dan SUBP yang didukung.")
 
 def start_merge():
     """Start the translation merge process"""
     if not xml_file_path:
-        messagebox.showwarning("Peringatan", "Pilih file XML terlebih dahulu.")
+        messagebox.showwarning("Peringatan", "Pilih file XML atau SUBP terlebih dahulu.")
         return
 
     manual_text = input_box.get("1.0", tk.END)
@@ -184,14 +345,38 @@ def start_merge():
     try:
         translations = parse_manual_translation(manual_text)
         count, output_file, updated = merge_translation_to_xml(xml_file_path, translations)
-        messagebox.showinfo("Sukses", f"{count} baris berhasil diperbarui.\nFile ditimpa: {output_file}")
         
-        # Display results
-        result_box.delete("1.0", tk.END)
-        result_box.insert(tk.END, f"File ditulis ulang: {output_file}\n")
-        result_box.insert(tk.END, f"Total diterjemahkan: {count} baris\n\n")
-        for line in updated:
-            result_box.insert(tk.END, line + "\n")
+        # If we're working with a SUBP file, convert back to SUBP
+        if subp_file_path:
+            try:
+                # Convert the modified XML back to SUBP
+                final_subp_path = convert_xml_to_subp(temp_xml_path, subp_file_path)
+                
+                messagebox.showinfo("Sukses", 
+                                   f"{count} baris berhasil diperbarui.\n"
+                                   f"File SUBP telah diperbarui: {os.path.basename(subp_file_path)}")
+                
+                # Display results
+                result_box.delete("1.0", tk.END)
+                result_box.insert(tk.END, f"File SUBP diperbarui: {os.path.basename(subp_file_path)}\n")
+                result_box.insert(tk.END, f"XML temporary: {os.path.basename(temp_xml_path)}\n")
+                result_box.insert(tk.END, f"Total diterjemahkan: {count} baris\n\n")
+                for line in updated:
+                    result_box.insert(tk.END, line + "\n")
+                    
+            except Exception as e:
+                messagebox.showerror("Error", f"Gagal mengkonversi kembali ke SUBP:\n{str(e)}")
+        else:
+            # Regular XML file processing
+            messagebox.showinfo("Sukses", f"{count} baris berhasil diperbarui.\nFile ditimpa: {output_file}")
+            
+            # Display results
+            result_box.delete("1.0", tk.END)
+            result_box.insert(tk.END, f"File ditulis ulang: {output_file}\n")
+            result_box.insert(tk.END, f"Total diterjemahkan: {count} baris\n\n")
+            for line in updated:
+                result_box.insert(tk.END, line + "\n")
+                
     except Exception as e:
         messagebox.showerror("Error", str(e))
 
@@ -208,15 +393,27 @@ def copy_result_to_clipboard():
 
 def on_drop(event):
     """Handle drag and drop file event"""
-    global xml_file_path
+    global xml_file_path, subp_file_path, temp_xml_path
+    
     dropped_files = root.tk.splitlist(event.data)
     if dropped_files:
-        xml_file_path = dropped_files[0]
-        if not xml_file_path.lower().endswith(".xml"):
-            messagebox.showwarning("File Tidak Valid", "Hanya file XML yang didukung.")
-            return
-        label_xml.config(text=os.path.basename(xml_file_path))
-        messagebox.showinfo("Berhasil", f"File dimuat: {os.path.basename(xml_file_path)}")
+        file_path = dropped_files[0]
+        file_extension = file_path.lower()
+        
+        if file_extension.endswith(".subp"):
+            # Process SUBP file
+            if process_subp_file(file_path):
+                # File processed successfully, no need for additional message
+                pass
+        elif file_extension.endswith(".xml"):
+            # Regular XML file
+            xml_file_path = file_path
+            subp_file_path = ""
+            temp_xml_path = ""
+            label_xml.config(text=os.path.basename(file_path))
+            messagebox.showinfo("Berhasil", f"File XML dimuat: {os.path.basename(file_path)}")
+        else:
+            messagebox.showwarning("File Tidak Valid", "Hanya file XML dan SUBP yang didukung.")
 
 # ============================================================================
 # GUI SETUP FUNCTIONS
@@ -254,7 +451,7 @@ def create_widgets():
     root.grid_columnconfigure(0, weight=1)  # Full width
     
     # Title
-    root.title("Input Manual Terjemahan & Timpa XML")
+    root.title("Input Manual Terjemahan & Timpa XML/SUBP")
     
     # Dark mode toggle
     dark_mode_btn = tk.Button(root, text="Light Mode", command=toggle_dark_mode, 
@@ -262,7 +459,7 @@ def create_widgets():
     dark_mode_btn.grid(row=0, column=0, pady=5)
     
     # Drag & drop area
-    frame_drop = tk.Label(root, text="(Atau drag & drop file XML ke sini)", 
+    frame_drop = tk.Label(root, text="(Atau drag & drop file XML/SUBP ke sini)", 
                          bg="#e0e0e0", relief="groove", padx=10, pady=10)
     frame_drop.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
     
@@ -270,8 +467,8 @@ def create_widgets():
     file_section = tk.Frame(root)
     file_section.grid(row=2, column=0, pady=5)
     
-    tk.Label(file_section, text="1. Pilih File XML Asli", font=("Arial", 10, "bold")).pack(pady=5)
-    browse_btn = tk.Button(file_section, text="Pilih File XML", command=browse_xml, width=20, height=1)
+    tk.Label(file_section, text="1. Pilih File XML atau SUBP", font=("Arial", 10, "bold")).pack(pady=5)
+    browse_btn = tk.Button(file_section, text="Pilih File XML/SUBP", command=browse_xml, width=20, height=1)
     browse_btn.pack()
     label_xml = tk.Label(file_section, text="Belum dipilih", fg="gray")
     label_xml.pack()
@@ -292,7 +489,7 @@ def create_widgets():
     buttons_section.grid(row=4, column=0, pady=10)
     
     # Main action button
-    merge_btn = tk.Button(buttons_section, text="Gabungkan & Timpa File XML", command=start_merge, 
+    merge_btn = tk.Button(buttons_section, text="Gabungkan & Timpa File XML/SUBP", command=start_merge, 
                          bg="#f44336", fg="white", width=40, height=2)
     merge_btn.pack(pady=(0, 10))
     
@@ -302,7 +499,7 @@ def create_widgets():
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=1)
     
-    extract_btn = tk.Button(button_frame, text="Ekstrak Semua Teks dari XML", 
+    extract_btn = tk.Button(button_frame, text="Ekstrak Semua Teks dari XML/SUBP", 
                            command=extract_text_lines_from_xml, bg="#2196F3", fg="white", 
                            width=35, height=2)
     extract_btn.grid(row=0, column=0, padx=5, sticky="ew")
@@ -347,8 +544,52 @@ def main():
     # Apply initial theme
     apply_theme()
     
+    # Setup cleanup on window close
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    
+    # Verify SubpTool.exe exists on startup
+    verify_subp_tool()
+    
     # Start main loop
     root.mainloop()
 
+def on_closing():
+    """Handle application closing"""
+    cleanup_temp_files()
+    root.destroy()
+
+def cleanup_temp_files():
+    """Clean up temporary files on application exit"""
+    try:
+        # Get the directory where the current script/executable is located
+        if getattr(sys, 'frozen', False):
+            # If running as compiled executable
+            script_dir = os.path.dirname(sys.executable)
+        else:
+            # If running as script
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        temp_dir = os.path.join(script_dir, "temp")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+    except:
+        pass  # Ignore cleanup errors
+
+def verify_subp_tool():
+    """Verify that SubpTool.exe exists and show warning if not"""
+    try:
+        get_subp_tool_path()
+        return True
+    except FileNotFoundError as e:
+        messagebox.showwarning("Peringatan", 
+                             f"SubpTool.exe tidak ditemukan!\n\n"
+                             f"Pastikan SubpTool.exe ada di folder FoxEngine.\n"
+                             f"Fitur SUBP akan dinonaktifkan.\n\n"
+                             f"Detail: {str(e)}")
+        return False
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        cleanup_temp_files()
